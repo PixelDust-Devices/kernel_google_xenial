@@ -1597,6 +1597,7 @@ static int nl80211_send_wiphy(struct cfg80211_registered_device *rdev,
 					NL80211_FEATURE_SUPPORTS_WMM_ADMISSION)
 				CMD(add_tx_ts, ADD_TX_TS);
 			CMD(update_connect_params, UPDATE_CONNECT_PARAMS);
+			CMD(update_ft_ies, UPDATE_FT_IES);
 		}
 		/* add into the if now */
 #undef CMD
@@ -10286,7 +10287,7 @@ static int nl80211_set_rekey_data(struct sk_buff *skb, struct genl_info *info)
 	struct net_device *dev = info->user_ptr[1];
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct nlattr *tb[NUM_NL80211_REKEY_DATA];
-	struct cfg80211_gtk_rekey_data rekey_data;
+	struct cfg80211_gtk_rekey_data rekey_data = {};
 	int err;
 
 	if (!info->attrs[NL80211_ATTR_REKEY_DATA])

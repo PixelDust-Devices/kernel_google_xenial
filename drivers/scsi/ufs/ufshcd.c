@@ -104,6 +104,10 @@ static int ufshcd_tag_req_type(struct request *rq)
 
 static void ufshcd_update_error_stats(struct ufs_hba *hba, int type)
 {
+	hba->h8_err = false;
+	if (type == UFS_ERR_HIBERN8_EXIT || type == UFS_ERR_HIBERN8_ENTER)
+		hba->h8_err = true;
+
 	ufsdbg_set_err_state(hba);
 	if (type < UFS_ERR_MAX)
 		hba->ufs_stats.err_stats[type]++;
@@ -273,7 +277,7 @@ update_io_stat(struct ufs_hba *hba, int tag, int is_start)
 				 UTP_TASK_REQ_COMPL |\
 				 UFSHCD_ERROR_MASK)
 /* UIC command timeout, unit: ms */
-#define UIC_CMD_TIMEOUT	500
+#define UIC_CMD_TIMEOUT	1500
 
 /* NOP OUT retries waiting for NOP IN response */
 #define NOP_OUT_RETRIES    10
@@ -286,7 +290,7 @@ update_io_stat(struct ufs_hba *hba, int tag, int is_start)
 #define QUERY_REQ_TIMEOUT 1500 /* 1.5 seconds */
 
 /* Task management command timeout */
-#define TM_CMD_TIMEOUT	100 /* msecs */
+#define TM_CMD_TIMEOUT	1500 /* msecs */
 
 /* maximum number of retries for a general UIC command  */
 #define UFS_UIC_COMMAND_RETRIES 3
@@ -823,6 +827,14 @@ static void ufshcd_print_clk_freqs(struct ufs_hba *hba)
 			dev_err(hba->dev, "clk: %s, rate: %u\n",
 					clki->name, clki->curr_freq);
 	}
+}
+
+void ufshcd_print_phy_state(struct ufs_hba *hba)
+{
+	if (!(hba->ufshcd_dbg_print & UFSHCD_DBG_PRINT_UIC_ERR_HIST_EN))
+		return;
+
+	ufs_qcom_print_phy_state(hba);
 }
 
 static void ufshcd_print_uic_err_hist(struct ufs_hba *hba,
@@ -5524,10 +5536,10 @@ ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 				"Reject UPIU not fully implemented\n");
 			break;
 		default:
-			result = DID_ERROR << 16;
 			dev_err(hba->dev,
 				"Unexpected request response code = %x\n",
 				result);
+			result = DID_ERROR << 16;
 			break;
 		}
 		break;
@@ -6212,6 +6224,14 @@ static void ufshcd_err_handler(struct work_struct *work)
 
 	hba = container_of(work, struct ufs_hba, eh_work);
 
+	if (hba->h8_err) {
+		dev_err(hba->dev, "%s: saved_err 0x%x saved_uic_err 0x%x",
+			__func__, hba->saved_err, hba->saved_uic_err);
+		ufshcd_print_phy_state(hba);
+		hba->h8_err = false;
+		hba->silence_err_logs = true;
+	}
+
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	ufsdbg_set_err_state(hba);
 
@@ -6769,20 +6789,18 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host;
 	struct ufs_hba *hba;
-	unsigned int tag;
 	u32 pos;
 	int err;
-	u8 resp = 0xF;
-	struct ufshcd_lrb *lrbp;
+	u8 resp = 0xF, lun;
 	unsigned long flags;
 
 	host = cmd->device->host;
 	hba = shost_priv(host);
-	tag = cmd->request->tag;
 
 	ufshcd_print_cmd_log(hba);
-	lrbp = &hba->lrb[tag];
-	err = ufshcd_issue_tm_cmd(hba, lrbp->lun, 0, UFS_LOGICAL_RESET, &resp);
+	lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
+	err = ufshcd_issue_tm_cmd(hba, lun, 0, UFS_LOGICAL_RESET, &resp);
+
 	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
 		if (!err)
 			err = resp;
@@ -6791,7 +6809,7 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 
 	/* clear the commands that were pending for corresponding LUN */
 	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
-		if (hba->lrb[pos].lun == lrbp->lun) {
+		if (hba->lrb[pos].lun == lun) {
 			err = ufshcd_clear_cmd(hba, pos);
 			if (err)
 				break;
